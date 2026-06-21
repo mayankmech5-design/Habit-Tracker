@@ -16,6 +16,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const storageKey = 'habit-tracker-native-state';
+const cloudBackendUrl = 'https://habit-tracker-cloud.onrender.com';
 const dayMs = 24 * 60 * 60 * 1000;
 const categories = ['Fitness', 'Study', 'Health', 'Nutrition', 'Mindfulness'];
 const DeviceStorage = AsyncStorage;
@@ -55,16 +56,28 @@ type AppState = {
   accounts: Account[];
   habits: Habit[];
   completions: Completion[];
-  cloudUrl: string;
 };
 
 const initialState: AppState = {
   currentUserId: null,
   accounts: [],
   habits: [],
-  completions: [],
-  cloudUrl: 'https://habit-tracker-cloud.onrender.com'
+  completions: []
 };
+
+function loadSavedState(saved: string): AppState {
+  try {
+    const parsed = JSON.parse(saved) as Record<string, unknown>;
+    return {
+      currentUserId: typeof parsed.currentUserId === 'string' ? parsed.currentUserId : null,
+      accounts: Array.isArray(parsed.accounts) ? parsed.accounts : [],
+      habits: Array.isArray(parsed.habits) ? parsed.habits : [],
+      completions: Array.isArray(parsed.completions) ? parsed.completions : []
+    };
+  } catch {
+    return initialState;
+  }
+}
 
 const today = () => new Date().toISOString().slice(0, 10);
 const dateOffset = (days: number) => {
@@ -122,7 +135,7 @@ function AppContent() {
   useEffect(() => {
     DeviceStorage.getItem(storageKey).then((saved) => {
       if (saved) {
-        setState({ ...initialState, ...JSON.parse(saved) });
+        setState({ ...initialState, ...loadSavedState(saved) });
       }
       setReady(true);
     });
@@ -178,7 +191,7 @@ function AppContent() {
 
   async function fetchCloudState(email: string, passwordHash: string) {
     try {
-      const response = await fetch(`${state.cloudUrl.replace(/\/$/, '')}/cloud/${encodeURIComponent(email)}?passwordHash=${encodeURIComponent(passwordHash)}`);
+      const response = await fetch(`${cloudBackendUrl.replace(/\/$/, '')}/cloud/${encodeURIComponent(email)}?passwordHash=${encodeURIComponent(passwordHash)}`);
       if (!response.ok) {
         const message = await response.text();
         throw new Error(message || 'Cloud fetch failed');
@@ -202,7 +215,7 @@ function AppContent() {
 
     try {
       setCloudMessage('Uploading to cloud...');
-      const response = await fetch(`${state.cloudUrl.replace(/\/$/, '')}/cloud/${encodeURIComponent(user.email)}`, {
+      const response = await fetch(`${cloudBackendUrl.replace(/\/$/, '')}/cloud/${encodeURIComponent(user.email)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ state, passwordHash: user.passwordHash })
@@ -233,7 +246,7 @@ function AppContent() {
         throw new Error('No cloud data available.');
       }
       skipAutoUploadAfterDownload.current = true;
-      setState((current) => ({ ...initialState, ...remote.state, cloudUrl: current.cloudUrl }));
+      setState((current) => ({ ...initialState, ...remote.state }));
       if (showAlerts) {
         setCloudMessage('Download complete.');
         Alert.alert('Cloud sync', 'Your data was restored from the cloud.');
@@ -299,7 +312,7 @@ function AppContent() {
     try {
       const remote = await fetchCloudState(email, passwordHash);
       if (remote && remote.state) {
-        setState((current) => ({ ...initialState, ...remote.state, cloudUrl: current.cloudUrl }));
+        setState((current) => ({ ...initialState, ...remote.state }));
         setAuthForm({ name: '', email: '', password: '' });
         return;
       }

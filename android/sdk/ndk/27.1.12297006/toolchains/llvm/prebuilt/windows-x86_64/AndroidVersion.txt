@@ -1,3 +1,0 @@
-18.0.2
-based on r522817b
-for additional information on LLVM revision and cherry-picks, see clang_source_info.md
