@@ -74,11 +74,16 @@ app.get('/cloud/:email', (req, res) => {
   return res.json({ state: existing.state });
 });
 
+app.get('/', (_req, res) => {
+  res.json({ status: 'ok', service: 'habit-tracker-backend' });
+});
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
-  console.log(`Cloud backend running on http://localhost:${port}`);
+  console.log(`Cloud backend running on port ${port}`);
+  console.log(`Health endpoint available at /health`);
 });
