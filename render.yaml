@@ -8,5 +8,4 @@ services:
     dockerfilePath: Dockerfile
     port: 3000
     autoDeploy: true
-    startCommand: "npm run start:backend"
     healthCheckPath: "/health"

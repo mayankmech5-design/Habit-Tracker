@@ -9,4 +9,4 @@ RUN npm ci --omit=dev
 COPY . .
 
 EXPOSE 3000
-CMD ["npm", "run", "start:backend"]
+CMD ["node", "cloud-backend.js"]
