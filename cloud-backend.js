@@ -71,7 +71,14 @@ app.get('/cloud/:email', (req, res) => {
     return res.status(401).json({ message: 'Invalid credentials or no cloud data.' });
   }
 
-  return\ res\.json\(\{\ state:\ existing\.state\ }\);\r\n}\);\r\n\r\napp\.get\('/health',\ \(_req,\ res\)\ =>\ \{\r\n\ \ res\.json\(\{\ status:\ 'ok'\ }\);\r\n}\);\r\n\r\nconst\ port\ =\ process\.env\.PORT\ \|\|\ 3000;
+  return res.json({ state: existing.state });
+});
+
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok' });
+});
+
+const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Cloud backend running on http://localhost:${port}`);
 });
