@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -13,15 +13,12 @@ import {
   TextInputProps,
   View
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const storageKey = 'habit-tracker-native-state';
 const dayMs = 24 * 60 * 60 * 1000;
 const categories = ['Fitness', 'Study', 'Health', 'Nutrition', 'Mindfulness'];
-const memoryStorage: Record<string, string> = {};
-const DeviceStorage = {
-  getItem: async (key: string) => memoryStorage[key] ?? null,
-  setItem: async (key: string, value: string) => { memoryStorage[key] = value; return null; }
-};
+const DeviceStorage = AsyncStorage;
 const frequencies = ['Daily', 'Weekdays', 'Weekly', 'Custom'];
 const statuses = ['Active', 'Paused', 'Archived'];
 
@@ -58,13 +55,15 @@ type AppState = {
   accounts: Account[];
   habits: Habit[];
   completions: Completion[];
+  cloudUrl: string;
 };
 
 const initialState: AppState = {
   currentUserId: null,
   accounts: [],
   habits: [],
-  completions: []
+  completions: [],
+  cloudUrl: 'https://habit-tracker-cloud.onrender.com'
 };
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -111,6 +110,14 @@ function AppContent() {
   const [categoryFilter, setCategoryFilter] = useState<'All' | string>('All');
   const [modalOpen, setModalOpen] = useState(false);
   const [habitForm, setHabitForm] = useState<Habit>(emptyHabit());
+  const [backupOpen, setBackupOpen] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [backupJson, setBackupJson] = useState('');
+  const [restoreJson, setRestoreJson] = useState('');
+  const [cloudMessage, setCloudMessage] = useState('');
+  const initialSyncDone = useRef(false);
+  const skipAutoUploadAfterDownload = useRef(false);
+  const firstStateSyncSkipped = useRef(false);
 
   useEffect(() => {
     DeviceStorage.getItem(storageKey).then((saved) => {
@@ -126,6 +133,30 @@ function AppContent() {
       DeviceStorage.setItem(storageKey, JSON.stringify(state));
     }
   }, [state, ready]);
+
+  useEffect(() => {
+    if (!ready || !state.currentUserId || initialSyncDone.current) return;
+    const account = state.accounts.find((account) => account.id === state.currentUserId);
+    if (!account) {
+      initialSyncDone.current = true;
+      return;
+    }
+    initialSyncDone.current = true;
+    downloadCloudFor(account.email, account.passwordHash, false);
+  }, [ready, state.currentUserId]);
+
+  useEffect(() => {
+    if (!ready || !state.currentUserId) return;
+    if (!firstStateSyncSkipped.current) {
+      firstStateSyncSkipped.current = true;
+      return;
+    }
+    if (skipAutoUploadAfterDownload.current) {
+      skipAutoUploadAfterDownload.current = false;
+      return;
+    }
+    uploadCloud();
+  }, [state, ready, state.currentUserId]);
 
   const user = state.accounts.find((account) => account.id === state.currentUserId);
   const userHabits = state.habits.filter((habit) => habit.userId === state.currentUserId);
@@ -144,6 +175,87 @@ function AppContent() {
     const bestStreak = Math.max(0, ...activeHabits.map((habit) => longestStreakFor(state, habit.id, habit.userId)));
     return { todayRate, weekRate, bestStreak, activeCount: activeHabits.length };
   }, [state, activeHabits.length]);
+
+  async function fetchCloudState(email: string, passwordHash: string) {
+    try {
+      const response = await fetch(`${state.cloudUrl.replace(/\/$/, '')}/cloud/${encodeURIComponent(email)}?passwordHash=${encodeURIComponent(passwordHash)}`);
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || 'Cloud fetch failed');
+      }
+      return await response.json();
+    } catch (error) {
+      throw new Error((error as Error).message || 'Cloud fetch failed');
+    }
+  }
+
+  async function uploadCloud() {
+    if (!state.currentUserId) {
+      Alert.alert('Login required', 'Sign in before syncing your data.');
+      return;
+    }
+    const user = state.accounts.find((account) => account.id === state.currentUserId);
+    if (!user) {
+      Alert.alert('User not found', 'Please log in again.');
+      return;
+    }
+
+    try {
+      setCloudMessage('Uploading to cloud...');
+      const response = await fetch(`${state.cloudUrl.replace(/\/$/, '')}/cloud/${encodeURIComponent(user.email)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state, passwordHash: user.passwordHash })
+      });
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || 'Cloud upload failed');
+      }
+      const result = await response.json();
+      setCloudMessage(result.message || 'Uploaded successfully.');
+      if (user && authForm.email.trim().toLowerCase() !== user.email) {
+        // make sure auth form stays usable after manual sync
+        setAuthForm((current) => ({ ...current, email: user.email }));
+      }
+      Alert.alert('Cloud sync', 'Upload complete. Your data is now stored in the cloud.');
+    } catch (error) {
+      const message = (error as Error).message || 'Upload failed';
+      setCloudMessage(message);
+      Alert.alert('Cloud upload failed', message);
+    }
+  }
+
+  async function downloadCloudFor(email: string, passwordHash: string, showAlerts = true) {
+    try {
+      if (showAlerts) setCloudMessage('Downloading from cloud...');
+      const remote = await fetchCloudState(email, passwordHash);
+      if (!remote || !remote.state) {
+        throw new Error('No cloud data available.');
+      }
+      skipAutoUploadAfterDownload.current = true;
+      setState((current) => ({ ...initialState, ...remote.state, cloudUrl: current.cloudUrl }));
+      if (showAlerts) {
+        setCloudMessage('Download complete.');
+        Alert.alert('Cloud sync', 'Your data was restored from the cloud.');
+      }
+      return true;
+    } catch (error) {
+      const message = (error as Error).message || 'Download failed';
+      setCloudMessage(message);
+      if (showAlerts) Alert.alert('Cloud download failed', message);
+      return false;
+    }
+  }
+
+  async function downloadCloud() {
+    if (!authForm.email.trim() || !authForm.password) {
+      Alert.alert('Enter email and password', 'Type the email and password for the account you want to restore.');
+      return;
+    }
+    const email = authForm.email.trim().toLowerCase();
+    const passwordHash = hashPassword(authForm.password);
+    await downloadCloudFor(email, passwordHash, true);
+  }
 
   async function submitAuth() {
     const email = authForm.email.trim().toLowerCase();
@@ -168,17 +280,34 @@ function AppContent() {
         passwordHash,
         createdAt: new Date().toISOString()
       } as const;
-      setState((current) => seedDemoData({ ...current, accounts: [...current.accounts, account], currentUserId: account.id }, account.id));
+      setState((current) => {
+        const next = seedDemoData({ ...current, accounts: [...current.accounts, account], currentUserId: account.id }, account.id);
+        return next;
+      });
       setAuthForm({ name: '', email: '', password: '' });
+      uploadCloud();
       return;
     }
 
-    if (!existing || existing.passwordHash !== passwordHash) {
-      Alert.alert('Login failed', 'Check your email and password.');
+    if (existing && existing.passwordHash === passwordHash) {
+      setState((current) => ({ ...seedDemoData(current, existing.id), currentUserId: existing.id }));
+      setAuthForm({ name: '', email: '', password: '' });
+      await downloadCloudFor(email, passwordHash, false);
       return;
     }
-    setState((current) => ({ ...seedDemoData(current, existing.id), currentUserId: existing.id }));
-    setAuthForm({ name: '', email: '', password: '' });
+
+    try {
+      const remote = await fetchCloudState(email, passwordHash);
+      if (remote && remote.state) {
+        setState((current) => ({ ...initialState, ...remote.state, cloudUrl: current.cloudUrl }));
+        setAuthForm({ name: '', email: '', password: '' });
+        return;
+      }
+    } catch {
+      // ignore and fall through to failure alert
+    }
+
+    Alert.alert('Login failed', 'Check your email and password.');
   }
 
   function saveHabit() {
@@ -361,22 +490,45 @@ function AppContent() {
         )}
 
         {tab === 'Sync' && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Device storage</Text>
-            <Text style={styles.muted}>Your data is stored locally on this device. To sync across devices, add a cloud backend later.</Text>
-            <View style={styles.actionRow}>
-              <Button title="Restore samples" variant="light" onPress={() => {
-                if (!state.currentUserId) return;
-                setState((current) => seedDemoData(current, current.currentUserId!));
-              }} />
-              <Button title="Reset data" variant="light" onPress={() => {
-                Alert.alert('Reset app data', 'This clears all local data and logs you out.', [
-                  { text: 'Cancel', style: 'cancel' },
-                  { text: 'Reset', style: 'destructive', onPress: () => setState(initialState) }
-                ]);
-              }} />
+          <>
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Device storage</Text>
+              <Text style={styles.muted}>Your data is stored locally on this device. You can export backup JSON to restore after reinstall or on another device.</Text>
+              <View style={styles.actionRow}>
+                <Button title="Export backup" variant="light" onPress={() => {
+                  const payload = { state, exportedAt: new Date().toISOString() };
+                  setBackupJson(JSON.stringify(payload, null, 2));
+                  setBackupOpen(true);
+                }} />
+                <Button title="Restore backup" variant="light" onPress={() => {
+                  setRestoreJson('');
+                  setRestoreOpen(true);
+                }} />
+              </View>
+              <View style={styles.actionRow}>
+                <Button title="Restore samples" variant="light" onPress={() => {
+                  if (!state.currentUserId) return;
+                  setState((current) => seedDemoData(current, current.currentUserId!));
+                }} />
+                <Button title="Reset data" variant="light" onPress={() => {
+                  Alert.alert('Reset app data', 'This clears all local data and logs you out.', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Reset', style: 'destructive', onPress: () => setState(initialState) }
+                  ]);
+                }} />
+              </View>
             </View>
-          </View>
+
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Cloud sync</Text>
+              <Text style={styles.muted}>Your data automatically syncs to the cloud and restores when you log in on a new device.</Text>
+              <View style={styles.actionRow}>
+                <Button title="Upload to cloud" variant="light" onPress={uploadCloud} />
+                <Button title="Download from cloud" variant="light" onPress={downloadCloud} />
+              </View>
+              {!!cloudMessage && <Text style={styles.cloudStatus}>{cloudMessage}</Text>}
+            </View>
+          </>
         )}
       </ScrollView>
 
@@ -387,6 +539,53 @@ function AppContent() {
         onCancel={() => setModalOpen(false)}
         onSave={saveHabit}
       />
+      <Modal visible={backupOpen} animationType="slide">
+        <SafeAreaView style={styles.safe}>
+          <View style={styles.content}>
+            <SectionTitle title="Export backup" action="Close" onPress={() => setBackupOpen(false)} />
+            <Text style={styles.muted}>Copy this JSON and save it somewhere safe. You can paste it on another device or after reinstalling.</Text>
+            <TextInput
+              style={[styles.input, styles.backupText]}
+              multiline
+              editable={false}
+              value={backupJson}
+              textAlignVertical="top"
+            />
+            <Button title="Close" onPress={() => setBackupOpen(false)} />
+          </View>
+        </SafeAreaView>
+      </Modal>
+      <Modal visible={restoreOpen} animationType="slide">
+        <SafeAreaView style={styles.safe}>
+          <View style={styles.content}>
+            <SectionTitle title="Restore backup" action="Close" onPress={() => setRestoreOpen(false)} />
+            <Text style={styles.muted}>Paste backup JSON from another device or a saved copy, then tap Restore.</Text>
+            <TextInput
+              style={[styles.input, styles.backupText]}
+              multiline
+              value={restoreJson}
+              onChangeText={setRestoreJson}
+              textAlignVertical="top"
+              placeholder="Paste backup JSON here"
+              placeholderTextColor="#89928e"
+            />
+            <View style={styles.actionRow}>
+              <Button title="Restore" onPress={() => {
+                try {
+                  const payload = JSON.parse(restoreJson.trim());
+                  const nextState = payload.state ?? payload;
+                  setState({ ...initialState, ...nextState });
+                  setRestoreOpen(false);
+                  Alert.alert('Backup restored', 'Your data has been imported successfully.');
+                } catch (error) {
+                  Alert.alert('Invalid backup', 'Please check the JSON and try again.');
+                }
+              }} />
+              <Button title="Cancel" variant="light" onPress={() => setRestoreOpen(false)} />
+            </View>
+          </View>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -917,6 +1116,16 @@ const styles = StyleSheet.create({
     color: '#34413e',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     fontSize: 11
+  },
+  cloudNote: {
+    marginTop: 4,
+    marginBottom: 10,
+    fontSize: 12
+  },
+  cloudStatus: {
+    marginTop: 10,
+    color: '#245c49',
+    fontWeight: '700'
   },
   optionWrap: {
     flexDirection: 'row',
