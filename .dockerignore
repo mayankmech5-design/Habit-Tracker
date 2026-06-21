@@ -1,0 +1,14 @@
+node_modules
+npm-debug.log
+Dockerfile
+.git
+.gitignore
+yarn.lock
+package-lock.json.sha
+android
+ios
+.idea
+.vscode
+*.md
+*.log
+*.iml
