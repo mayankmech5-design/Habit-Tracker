@@ -16,7 +16,8 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const storageKey = 'habit-tracker-native-state';
-const cloudBackendUrl = 'https://habit-tracker-cloud.onrender.com';
+const loginCredentialsKey = 'habit-tracker-login-credentials';
+const cloudBackendUrl = 'https://mayank-8iil.onrender.com';
 const dayMs = 24 * 60 * 60 * 1000;
 const categories = ['Fitness', 'Study', 'Health', 'Nutrition', 'Mindfulness'];
 const DeviceStorage = AsyncStorage;
@@ -128,17 +129,46 @@ function AppContent() {
   const [backupJson, setBackupJson] = useState('');
   const [restoreJson, setRestoreJson] = useState('');
   const [cloudMessage, setCloudMessage] = useState('');
+  const [cloudStatus, setCloudStatus] = useState('Idle');
   const initialSyncDone = useRef(false);
   const skipAutoUploadAfterDownload = useRef(false);
   const firstStateSyncSkipped = useRef(false);
+  const syncInProgress = useRef(false);
+  const pendingUpload = useRef(false);
+  const syncDebounceTimer = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    DeviceStorage.getItem(storageKey).then((saved) => {
+    (async () => {
+      const saved = await DeviceStorage.getItem(storageKey);
       if (saved) {
         setState({ ...initialState, ...loadSavedState(saved) });
       }
+      
+      const credentials = await DeviceStorage.getItem(loginCredentialsKey);
+      if (credentials && !saved) {
+        setReady(true);
+        return;
+      }
+      
+      if (credentials && saved) {
+        try {
+          const creds = JSON.parse(credentials) as { email: string; passwordHash: string };
+          const response = await fetch(`${cloudBackendUrl.replace(/\/$/, '')}/cloud/${encodeURIComponent(creds.email)}?passwordHash=${encodeURIComponent(creds.passwordHash)}`);
+          if (response.ok) {
+            const remote = await response.json();
+            if (remote && remote.state) {
+              const restoredState = { ...initialState, ...remote.state };
+              setState(restoredState);
+              initialSyncDone.current = true;
+            }
+          }
+        } catch {
+          // Silent fail, use local state
+        }
+      }
+      
       setReady(true);
-    });
+    })();
   }, []);
 
   useEffect(() => {
@@ -168,7 +198,14 @@ function AppContent() {
       skipAutoUploadAfterDownload.current = false;
       return;
     }
-    uploadCloud();
+    
+    if (syncDebounceTimer.current) {
+      clearTimeout(syncDebounceTimer.current);
+    }
+    
+    syncDebounceTimer.current = setTimeout(() => {
+      uploadCloud();
+    }, 1000);
   }, [state, ready, state.currentUserId]);
 
   const user = state.accounts.find((account) => account.id === state.currentUserId);
@@ -202,23 +239,33 @@ function AppContent() {
     }
   }
 
-  async function uploadCloud() {
-    if (!state.currentUserId) {
+  async function uploadCloud(overrideState?: AppState) {
+    const uploadState = overrideState ?? state;
+    if (!uploadState.currentUserId) {
       Alert.alert('Login required', 'Sign in before syncing your data.');
       return;
     }
-    const user = state.accounts.find((account) => account.id === state.currentUserId);
+    const user = uploadState.accounts.find((account) => account.id === uploadState.currentUserId);
     if (!user) {
       Alert.alert('User not found', 'Please log in again.');
       return;
     }
 
+    if (syncInProgress.current) {
+      pendingUpload.current = true;
+      setCloudStatus('Queued upload');
+      setCloudMessage('A sync is already running. Upload will happen automatically shortly.');
+      return;
+    }
+
+    syncInProgress.current = true;
+    setCloudStatus('Uploading');
     try {
       setCloudMessage('Uploading to cloud...');
       const response = await fetch(`${cloudBackendUrl.replace(/\/$/, '')}/cloud/${encodeURIComponent(user.email)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state, passwordHash: user.passwordHash })
+        body: JSON.stringify({ state: uploadState, passwordHash: user.passwordHash })
       });
       if (!response.ok) {
         const message = await response.text();
@@ -226,15 +273,22 @@ function AppContent() {
       }
       const result = await response.json();
       setCloudMessage(result.message || 'Uploaded successfully.');
+      setCloudStatus('Up to date');
       if (user && authForm.email.trim().toLowerCase() !== user.email) {
-        // make sure auth form stays usable after manual sync
         setAuthForm((current) => ({ ...current, email: user.email }));
       }
       Alert.alert('Cloud sync', 'Upload complete. Your data is now stored in the cloud.');
     } catch (error) {
       const message = (error as Error).message || 'Upload failed';
       setCloudMessage(message);
-      Alert.alert('Cloud upload failed', message);
+      setCloudStatus('Upload failed');
+      pendingUpload.current = true;
+    } finally {
+      syncInProgress.current = false;
+      if (pendingUpload.current) {
+        pendingUpload.current = false;
+        uploadCloud();
+      }
     }
   }
 
@@ -295,15 +349,20 @@ function AppContent() {
       } as const;
       setState((current) => {
         const next = seedDemoData({ ...current, accounts: [...current.accounts, account], currentUserId: account.id }, account.id);
+        (async () => {
+          setCloudMessage('Creating account and uploading to cloud...');
+          await uploadCloud(next);
+        })();
         return next;
       });
+      await DeviceStorage.setItem(loginCredentialsKey, JSON.stringify({ email, passwordHash }));
       setAuthForm({ name: '', email: '', password: '' });
-      uploadCloud();
       return;
     }
 
     if (existing && existing.passwordHash === passwordHash) {
       setState((current) => ({ ...seedDemoData(current, existing.id), currentUserId: existing.id }));
+      await DeviceStorage.setItem(loginCredentialsKey, JSON.stringify({ email, passwordHash }));
       setAuthForm({ name: '', email: '', password: '' });
       await downloadCloudFor(email, passwordHash, false);
       return;
@@ -312,12 +371,21 @@ function AppContent() {
     try {
       const remote = await fetchCloudState(email, passwordHash);
       if (remote && remote.state) {
-        setState((current) => ({ ...initialState, ...remote.state }));
+        const restoredState = { ...initialState, ...remote.state };
+        const restoredAccount = restoredState.accounts.find((account) => account.email === email);
+        const nextState = restoredAccount ? { ...restoredState, currentUserId: restoredAccount.id } : restoredState;
+        setState(nextState);
+        await DeviceStorage.setItem(loginCredentialsKey, JSON.stringify({ email, passwordHash }));
         setAuthForm({ name: '', email: '', password: '' });
+        if (!restoredAccount) {
+          setCloudMessage('Cloud data restored, but no matching account was found locally.');
+        }
         return;
       }
-    } catch {
-      // ignore and fall through to failure alert
+    } catch (error) {
+      const errorMsg = (error as Error).message || 'Unknown error';
+      Alert.alert('Cloud restore failed', errorMsg + '\n\nIf this is your first login, create a new account.');
+      return;
     }
 
     Alert.alert('Login failed', 'Check your email and password.');
@@ -430,7 +498,10 @@ function AppContent() {
           <Text style={styles.eyebrow}>{new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</Text>
           <Text style={styles.title}>Hi, {user.name}</Text>
         </View>
-        <Pressable style={styles.logoutButton} onPress={() => setState({ ...state, currentUserId: null })}>
+        <Pressable style={styles.logoutButton} onPress={() => {
+          setState({ ...state, currentUserId: null });
+          DeviceStorage.removeItem(loginCredentialsKey);
+        }}>
           <Text style={styles.logoutText}>Logout</Text>
         </Pressable>
       </View>
@@ -539,6 +610,7 @@ function AppContent() {
                 <Button title="Upload to cloud" variant="light" onPress={uploadCloud} />
                 <Button title="Download from cloud" variant="light" onPress={downloadCloud} />
               </View>
+              <Text style={styles.cloudNote}>Status: {cloudStatus}</Text>
               {!!cloudMessage && <Text style={styles.cloudStatus}>{cloudMessage}</Text>}
             </View>
           </>

@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: habit-tracker-backend
+    env: docker
+    branch: main
+    repo: https://robotics.hochschule-rhein-waal.de/gitlab/PSD/sose-2026/sose-2026-group-b.git
+    plan: free
+    dockerfilePath: Dockerfile
+    port: 3000
+    autoDeploy: true
+    startCommand: "npm run start:backend"
+    healthCheckPath: "/health"
