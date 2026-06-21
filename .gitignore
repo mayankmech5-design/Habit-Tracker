@@ -1,2 +1,37 @@
-node_modules
+# Node dependencies
+node_modules/
+
+# Android build artifacts
+android/.gradle/
+android/app/build/
+android/build/
+android/app/.cxx/
+android/app/src/main/cpp/.externalNativeBuild/
+android/sdk/
+
+# Xcode / iOS build artifacts
+ios/build/
+ios/Pods/
+ios/Pods-*
+*.xcworkspace
+*.xcuserdatad
+
+# React Native
+.expo/
+.expo-shared/
+*.expo
+
+# macOS / Windows
+.DS_Store
+Thumbs.db
+*.log
+
+# Local environment
+.env
 cloud-data.json
+
+# Docker
+docker-compose.override.yml
+
+# VS Code
+.vscode/
