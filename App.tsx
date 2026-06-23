@@ -119,6 +119,7 @@ function AppContent() {
   const [ready, setReady] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authForm, setAuthForm] = useState<AuthForm>({ name: '', email: '', password: '' });
+  const [authMessage, setAuthMessage] = useState('');
   const [tab, setTab] = useState<'Overview' | 'Habits' | 'Analytics' | 'Sync'>('Overview');
   const [range, setRange] = useState<'Daily' | 'Weekly' | 'Monthly'>('Daily');
   const [habitQuery, setHabitQuery] = useState('');
@@ -328,7 +329,7 @@ function AppContent() {
     const email = authForm.email.trim().toLowerCase();
     const password = authForm.password;
     if (!email || password.length < 6) {
-      Alert.alert('Check details', 'Use an email and a password with at least 6 characters.');
+      setAuthMessage('Use an email and a password with at least 6 characters.');
       return;
     }
 
@@ -337,7 +338,7 @@ function AppContent() {
 
     if (authMode === 'register') {
       if (existing) {
-        Alert.alert('Account exists', 'Use login for this email.');
+        setAuthMessage('Account exists — use login for this email.');
         return;
       }
       const account = {
@@ -384,11 +385,11 @@ function AppContent() {
       }
     } catch (error) {
       const errorMsg = (error as Error).message || 'Unknown error';
-      Alert.alert('Cloud restore failed', errorMsg + '\n\nIf this is your first login, create a new account.');
+      setAuthMessage(errorMsg + '\nIf this is your first login, create a new account.');
       return;
     }
 
-    Alert.alert('Login failed', 'Check your email and password.');
+    setAuthMessage('Login failed — check your email and password.');
   }
 
   function saveHabit() {
@@ -481,10 +482,11 @@ function AppContent() {
         </View>
 
         {authMode === 'register' && (
-          <Field label="Name" value={authForm.name} onChangeText={(name) => setAuthForm({ ...authForm, name })} />
+          <Field label="Name" value={authForm.name} onChangeText={(name) => { setAuthForm({ ...authForm, name }); setAuthMessage(''); }} />
         )}
-        <Field label="Email" value={authForm.email} autoCapitalize="none" keyboardType="email-address" onChangeText={(email) => setAuthForm({ ...authForm, email })} />
-        <Field label="Password" value={authForm.password} secureTextEntry onChangeText={(password) => setAuthForm({ ...authForm, password })} />
+        <Field label="Email" value={authForm.email} autoCapitalize="none" keyboardType="email-address" onChangeText={(email) => { setAuthForm({ ...authForm, email }); setAuthMessage(''); }} />
+        <Field label="Password" value={authForm.password} secureTextEntry onChangeText={(password) => { setAuthForm({ ...authForm, password }); setAuthMessage(''); }} />
+        {!!authMessage && <Text style={styles.authError}>{authMessage}</Text>}
         <Button title={authMode === 'login' ? 'Login' : 'Create account'} onPress={submitAuth} />
       </Screen>
     );
@@ -1227,6 +1229,11 @@ const styles = StyleSheet.create({
     padding: 8,
     borderRadius: 12,
     zIndex: 1000
+  },
+  authError: {
+    marginTop: 10,
+    color: '#b00020',
+    fontWeight: '700'
   },
   optionWrap: {
     flexDirection: 'row',
