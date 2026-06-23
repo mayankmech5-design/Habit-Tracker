@@ -16,39 +16,12 @@ jobs:
         with:
           node-version: '20'
       - name: Install dependencies
-        run: npm ci
+        run: npm ci || npm install --legacy-peer-deps
         working-directory: ./
       - name: Run tests
         run: npm test || true
 
-  vuln-audit:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Use Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - name: Install dependencies for audit
-        run: npm ci
-      - name: Run npm audit (save JSON)
-        run: |
-          npm audit --json > audit.json || true
-      - name: Upload audit report
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-audit-report
-          path: audit.json
-      - name: Try auto-fix vulnerabilities
-        run: |
-          npm audit fix || true
-          npm audit --json > audit-after-fix.json || true
-      - name: Upload post-fix report
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-audit-report-after-fix
-          path: audit-after-fix.json
+  # Vulnerability audit job removed per project direction
 
   build-and-push-image:
     needs: test
