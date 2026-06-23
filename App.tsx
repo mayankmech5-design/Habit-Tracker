@@ -17,7 +17,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const storageKey = 'habit-tracker-native-state';
 const loginCredentialsKey = 'habit-tracker-login-credentials';
-const cloudBackendUrl = 'https://mayank-8iil.onrender.com';
+const cloudBackendUrl = 'https://habit-tracker-vclo.onrender.com';
 const dayMs = 24 * 60 * 60 * 1000;
 const categories = ['Fitness', 'Study', 'Health', 'Nutrition', 'Mindfulness'];
 const DeviceStorage = AsyncStorage;
