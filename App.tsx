@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  ActivityIndicator,
   Modal,
   Platform,
   Pressable,
@@ -277,7 +278,6 @@ function AppContent() {
       if (user && authForm.email.trim().toLowerCase() !== user.email) {
         setAuthForm((current) => ({ ...current, email: user.email }));
       }
-      Alert.alert('Cloud sync', 'Upload complete. Your data is now stored in the cloud.');
     } catch (error) {
       const message = (error as Error).message || 'Upload failed';
       setCloudMessage(message);
@@ -616,6 +616,13 @@ function AppContent() {
           </>
         )}
       </ScrollView>
+
+      {/* Non-blocking cloud activity indicator in the corner */}
+      {(cloudStatus === 'Uploading' || cloudMessage.toLowerCase().includes('upload') || cloudMessage.toLowerCase().includes('download')) && (
+        <View style={styles.cloudIndicator} pointerEvents="none">
+          <ActivityIndicator size="small" color="#fff" />
+        </View>
+      )}
 
       <HabitModal
         visible={modalOpen}
@@ -1211,6 +1218,15 @@ const styles = StyleSheet.create({
     marginTop: 10,
     color: '#245c49',
     fontWeight: '700'
+  },
+  cloudIndicator: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    padding: 8,
+    borderRadius: 12,
+    zIndex: 1000
   },
   optionWrap: {
     flexDirection: 'row',
