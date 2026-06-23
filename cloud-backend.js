@@ -9,6 +9,8 @@ app.use(cors());
 app.use(bodyParser.json({ limit: '5mb' }));
 
 const backupFile = path.resolve(__dirname, 'cloud-data.json');
+const backupsDir = path.resolve(__dirname, 'backups');
+const maxBackups = 10; // keep this many recent backups
 const store = new Map();
 
 function loadStore() {
@@ -33,6 +35,23 @@ function saveStore() {
   try {
     const data = Object.fromEntries(store.entries());
     fs.writeFileSync(backupFile, JSON.stringify(data, null, 2), 'utf8');
+    try {
+      if (!fs.existsSync(backupsDir)) fs.mkdirSync(backupsDir, { recursive: true });
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const backupName = `cloud-data-${timestamp}.json`;
+      const backupPath = path.join(backupsDir, backupName);
+      fs.writeFileSync(backupPath, JSON.stringify(data, null, 2), 'utf8');
+      // prune old backups
+      const files = fs.readdirSync(backupsDir).filter((f) => f.endsWith('.json')).sort();
+      if (files.length > maxBackups) {
+        const remove = files.slice(0, files.length - maxBackups);
+        remove.forEach((file) => {
+          try { fs.unlinkSync(path.join(backupsDir, file)); } catch (e) { /* ignore */ }
+        });
+      }
+    } catch (e) {
+      console.error('Failed to write backup copy:', e);
+    }
   } catch (error) {
     console.error('Failed to save cloud backup file:', error);
   }
@@ -80,6 +99,40 @@ app.get('/', (_req, res) => {
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
+});
+
+// Admin: create a manual backup, list backups, and download
+app.post('/admin/backup', (_req, res) => {
+  try {
+    saveStore();
+    const files = fs.existsSync(backupsDir) ? fs.readdirSync(backupsDir).filter((f) => f.endsWith('.json')).sort() : [];
+    const latest = files.length ? files[files.length - 1] : null;
+    return res.json({ message: 'Backup created', file: latest });
+  } catch (e) {
+    return res.status(500).json({ message: 'Backup failed', error: String(e) });
+  }
+});
+
+app.get('/admin/backups', (_req, res) => {
+  try {
+    if (!fs.existsSync(backupsDir)) return res.json({ backups: [] });
+    const files = fs.readdirSync(backupsDir).filter((f) => f.endsWith('.json')).sort();
+    return res.json({ backups: files });
+  } catch (e) {
+    return res.status(500).json({ message: 'Failed to list backups', error: String(e) });
+  }
+});
+
+app.get('/admin/backups/:file', (req, res) => {
+  try {
+    const file = req.params.file;
+    if (!/^[0-9A-Za-z\-_.]+\.json$/.test(file)) return res.status(400).json({ message: 'Invalid file name' });
+    const filePath = path.join(backupsDir, file);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ message: 'Not found' });
+    return res.sendFile(filePath);
+  } catch (e) {
+    return res.status(500).json({ message: 'Failed to retrieve backup', error: String(e) });
+  }
 });
 
 const port = process.env.PORT || 3000;
