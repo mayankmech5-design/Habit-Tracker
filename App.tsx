@@ -315,16 +315,6 @@ function AppContent() {
     }
   }
 
-  async function downloadCloud() {
-    if (!authForm.email.trim() || !authForm.password) {
-      Alert.alert('Enter email and password', 'Type the email and password for the account you want to restore.');
-      return;
-    }
-    const email = authForm.email.trim().toLowerCase();
-    const passwordHash = hashPassword(authForm.password);
-    await downloadCloudFor(email, passwordHash, true);
-  }
-
   async function submitAuth() {
     const email = authForm.email.trim().toLowerCase();
     const password = authForm.password;
@@ -592,10 +582,6 @@ function AppContent() {
                 }} />
               </View>
               <View style={styles.actionRow}>
-                <Button title="Restore samples" variant="light" onPress={() => {
-                  if (!state.currentUserId) return;
-                  setState((current) => seedDemoData(current, current.currentUserId!));
-                }} />
                 <Button title="Reset data" variant="light" onPress={() => {
                   Alert.alert('Reset app data', 'This clears all local data and logs you out.', [
                     { text: 'Cancel', style: 'cancel' },
@@ -610,8 +596,8 @@ function AppContent() {
               <Text style={styles.muted}>Your data automatically syncs to the cloud and restores when you log in on a new device.</Text>
               <View style={styles.actionRow}>
                 <Button title="Upload to cloud" variant="light" onPress={uploadCloud} />
-                <Button title="Download from cloud" variant="light" onPress={downloadCloud} />
               </View>
+              <Text style={styles.muted}>Your cloud data is automatically downloaded and restored every time you log in — no manual action needed.</Text>
               <Text style={styles.cloudNote}>Status: {cloudStatus}</Text>
               {!!cloudMessage && <Text style={styles.cloudStatus}>{cloudMessage}</Text>}
             </View>
@@ -927,7 +913,8 @@ function capitalize(value: string) {
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: '#f7f5ef'
+    backgroundColor: '#f7f5ef',
+    paddingTop: 15
   },
   authContent: {
     flexGrow: 1,
