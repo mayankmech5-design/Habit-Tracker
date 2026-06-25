@@ -81,6 +81,94 @@ function loadSavedState(saved: string): AppState {
   }
 }
 
+type HabitDiff = { added: Habit[]; updated: Habit[]; removed: string[] };
+type CompletionDiff = { added: Completion[]; removed: string[] };
+type StateSyncDelta = {
+  currentUserId: string | null;
+  account?: Account;
+  habitDiff: HabitDiff;
+  completionDiff: CompletionDiff;
+};
+
+type SyncPayload = { state: AppState } | { delta: StateSyncDelta } | null;
+
+function mapById<T extends { id: string }>(items: T[]) {
+  return new Map(items.map((item) => [item.id, item]));
+}
+
+function diffItems<T extends { id: string }>(current: T[], previous: T[]) {
+  const previousById = mapById(previous);
+  const added: T[] = [];
+  const updated: T[] = [];
+  const removed: string[] = [];
+
+  current.forEach((item) => {
+    const prev = previousById.get(item.id);
+    if (!prev) {
+      added.push(item);
+    } else if (JSON.stringify(prev) !== JSON.stringify(item)) {
+      updated.push(item);
+    }
+  });
+
+  const currentIds = new Set(current.map((item) => item.id));
+  previous.forEach((item) => {
+    if (!currentIds.has(item.id)) {
+      removed.push(item.id);
+    }
+  });
+
+  return { added, updated, removed };
+}
+
+function buildStateSyncPayload(current: AppState, previous: AppState | null): SyncPayload {
+  if (!previous || current.currentUserId !== previous.currentUserId) {
+    return { state: current };
+  }
+
+  const userId = current.currentUserId;
+  if (!userId) {
+    return { state: current };
+  }
+
+  const currentAccount = current.accounts.find((account) => account.id === userId);
+  const previousAccount = previous.accounts.find((account) => account.id === userId);
+  const accountChanged = Boolean(
+    (currentAccount && !previousAccount) ||
+    (!currentAccount && previousAccount) ||
+    (currentAccount && previousAccount && JSON.stringify(currentAccount) !== JSON.stringify(previousAccount))
+  );
+
+  const currentHabits = current.habits.filter((habit) => habit.userId === userId);
+  const previousHabits = previous.habits.filter((habit) => habit.userId === userId);
+  const habitDiff = diffItems(currentHabits, previousHabits);
+
+  const currentCompletions = current.completions.filter((completion) => completion.userId === userId);
+  const previousCompletions = previous.completions.filter((completion) => completion.userId === userId);
+  const completionDiff = diffItems(currentCompletions, previousCompletions);
+
+  const hasChanges =
+    accountChanged ||
+    habitDiff.added.length ||
+    habitDiff.updated.length ||
+    habitDiff.removed.length ||
+    completionDiff.added.length ||
+    completionDiff.removed.length;
+
+  if (!hasChanges) {
+    return null;
+  }
+
+  return {
+    delta: {
+      currentUserId: userId,
+      account: accountChanged ? currentAccount : undefined,
+      habitDiff,
+      completionDiff
+    }
+  };
+}
+
 const today = () => new Date().toISOString().slice(0, 10);
 const dateOffset = (days: number) => {
   const date = new Date();
@@ -135,9 +223,10 @@ function AppContent() {
   const initialSyncDone = useRef(false);
   const skipAutoUploadAfterDownload = useRef(false);
   const firstStateSyncSkipped = useRef(false);
+  const lastSyncedState = useRef<AppState | null>(null);
   const syncInProgress = useRef(false);
   const pendingUpload = useRef(false);
-  const syncDebounceTimer = useRef<NodeJS.Timeout | null>(null);
+  const syncDebounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -147,12 +236,7 @@ function AppContent() {
       }
       
       const credentials = await DeviceStorage.getItem(loginCredentialsKey);
-      if (credentials && !saved) {
-        setReady(true);
-        return;
-      }
-      
-      if (credentials && saved) {
+      if (credentials) {
         try {
           const creds = JSON.parse(credentials) as { email: string; passwordHash: string };
           const response = await fetch(`${cloudBackendUrl.replace(/\/$/, '')}/cloud/${encodeURIComponent(creds.email)}?passwordHash=${encodeURIComponent(creds.passwordHash)}`);
@@ -161,6 +245,7 @@ function AppContent() {
             if (remote && remote.state) {
               const restoredState = { ...initialState, ...remote.state };
               setState(restoredState);
+              lastSyncedState.current = restoredState;
               initialSyncDone.current = true;
             }
           }
@@ -260,14 +345,21 @@ function AppContent() {
       return;
     }
 
+    const payload = buildStateSyncPayload(uploadState, lastSyncedState.current);
+    if (!payload) {
+      setCloudStatus('Up to date');
+      setCloudMessage('No changes to upload.');
+      return true;
+    }
+
     syncInProgress.current = true;
     setCloudStatus('Uploading');
     try {
       setCloudMessage('Uploading to cloud...');
-      const response = await fetch(`${cloudBackendUrl.replace(/\/$/, '')}/cloud/${encodeURIComponent(user.email)}`, {
+      const response = await fetch(`${cloudBackendUrl.replace(/\/$/, '')}/cloud`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state: uploadState, passwordHash: user.passwordHash })
+        body: JSON.stringify({ ...payload, passwordHash: user.passwordHash })
       });
       if (!response.ok) {
         const message = await response.text();
@@ -276,6 +368,7 @@ function AppContent() {
       const result = await response.json();
       setCloudMessage(result.message || 'Uploaded successfully.');
       setCloudStatus('Up to date');
+      lastSyncedState.current = uploadState;
       if (user && authForm.email.trim().toLowerCase() !== user.email) {
         setAuthForm((current) => ({ ...current, email: user.email }));
       }
@@ -301,7 +394,9 @@ function AppContent() {
         throw new Error('No cloud data available.');
       }
       skipAutoUploadAfterDownload.current = true;
-      setState((current) => ({ ...initialState, ...remote.state }));
+      const restoredState = { ...initialState, ...remote.state };
+      setState(restoredState);
+      lastSyncedState.current = restoredState;
       if (showAlerts) {
         setCloudMessage('Download complete.');
         Alert.alert('Cloud sync', 'Your data was restored from the cloud.');
@@ -363,7 +458,7 @@ function AppContent() {
       const remote = await fetchCloudState(email, passwordHash);
       if (remote && remote.state) {
         const restoredState = { ...initialState, ...remote.state };
-        const restoredAccount = restoredState.accounts.find((account) => account.email === email);
+        const restoredAccount = restoredState.accounts.find((restoredAccount: Account) => restoredAccount.email === email);
         const nextState = restoredAccount ? { ...restoredState, currentUserId: restoredAccount.id } : restoredState;
         setState(nextState);
         await DeviceStorage.setItem(loginCredentialsKey, JSON.stringify({ email, passwordHash }));

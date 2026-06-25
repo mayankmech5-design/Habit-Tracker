@@ -205,18 +205,92 @@ app.get('/cloud', authMiddleware, (req, res) => {
 });
 
 app.post('/cloud', authMiddleware, (req, res) => {
-  const { state } = req.body;
-  if (state === undefined || state === null) {
-    return res.status(400).json({ message: 'Missing state payload.' });
-  }
-  const stateStr = typeof state === 'string' ? state : JSON.stringify(state);
-  const byteLen = Buffer.byteLength(stateStr, 'utf8');
-  if (byteLen > 250 * 1024) {
-    return res.status(413).json({ message: 'State payload too large.' });
+  const { state, delta } = req.body;
+  if ((state === undefined || state === null) && (delta === undefined || delta === null)) {
+    return res.status(400).json({ message: 'Missing state or delta payload.' });
   }
 
-  upsertState(req.user.id, stateStr);
-  return res.json({ message: 'State synced successfully.' });
+  const userId = req.user.id;
+  let nextState = { currentUserId: userId, accounts: [], habits: [], completions: [] };
+  const stateRow = getStateByUserId(userId);
+  if (stateRow) {
+    try {
+      nextState = JSON.parse(stateRow.state_json);
+    } catch {
+      nextState = { currentUserId: userId, accounts: [], habits: [], completions: [] };
+    }
+  }
+
+  if (state !== undefined && state !== null) {
+    const stateStr = typeof state === 'string' ? state : JSON.stringify(state);
+    const byteLen = Buffer.byteLength(stateStr, 'utf8');
+    if (byteLen > 250 * 1024) {
+      return res.status(413).json({ message: 'State payload too large.' });
+    }
+    upsertState(userId, stateStr);
+    return res.json({ message: 'State synced successfully.' });
+  }
+
+  if (delta !== undefined && delta !== null) {
+    if (delta.currentUserId !== userId) {
+      return res.status(400).json({ message: 'Delta currentUserId mismatch.' });
+    }
+
+    const account = delta.account;
+    if (account) {
+      const accountIndex = nextState.accounts.findIndex((item) => item.id === account.id);
+      if (accountIndex >= 0) {
+        nextState.accounts[accountIndex] = account;
+      } else {
+        nextState.accounts.push(account);
+      }
+    }
+
+    if (delta.habitDiff) {
+      const habitMap = new Map(nextState.habits.map((item) => [item.id, item]));
+      delta.habitDiff.added?.forEach((habit) => {
+        if (!habitMap.has(habit.id)) {
+          nextState.habits.push(habit);
+          habitMap.set(habit.id, habit);
+        }
+      });
+      delta.habitDiff.updated?.forEach((habit) => {
+        const index = nextState.habits.findIndex((item) => item.id === habit.id);
+        if (index >= 0) {
+          nextState.habits[index] = habit;
+        } else {
+          nextState.habits.push(habit);
+        }
+      });
+      if (Array.isArray(delta.habitDiff.removed)) {
+        nextState.habits = nextState.habits.filter((item) => !delta.habitDiff.removed.includes(item.id));
+      }
+    }
+
+    if (delta.completionDiff) {
+      const completionMap = new Map(nextState.completions.map((item) => [item.id, item]));
+      delta.completionDiff.added?.forEach((completion) => {
+        if (!completionMap.has(completion.id)) {
+          nextState.completions.push(completion);
+          completionMap.set(completion.id, completion);
+        }
+      });
+      if (Array.isArray(delta.completionDiff.removed)) {
+        nextState.completions = nextState.completions.filter((item) => !delta.completionDiff.removed.includes(item.id));
+      }
+    }
+
+    const updatedStateStr = JSON.stringify(nextState);
+    const byteLen = Buffer.byteLength(updatedStateStr, 'utf8');
+    if (byteLen > 250 * 1024) {
+      return res.status(413).json({ message: 'Updated state payload too large.' });
+    }
+
+    upsertState(userId, updatedStateStr);
+    return res.json({ message: 'Delta synced successfully.' });
+  }
+
+  return res.status(400).json({ message: 'Invalid sync payload.' });
 });
 
 app.get('/', (_req, res) => {
